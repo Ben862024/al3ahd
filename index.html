@@ -512,6 +512,8 @@ body{
 .btn-danger{border-radius:12px;}
 
 </style>
+<script src="supabase-config.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
 </head>
 <body class="f-cairo">
 
@@ -1468,8 +1470,10 @@ const appOpenedAt = new Date();
 /* ============================================================
    INIT
    ============================================================ */
-document.addEventListener('DOMContentLoaded', () => {
+document.addEventListener('DOMContentLoaded', async () => {
   loadState();
+  await loadSharedContent();
+  subscribeSharedContent();
   const clockThemeSlot = document.getElementById('clockThemeSlot');
   const themePanelWrap = document.getElementById('themePanelWrap');
   if(clockThemeSlot && themePanelWrap) clockThemeSlot.appendChild(themePanelWrap);
@@ -1508,6 +1512,85 @@ function updateSidebarClock(){
   if(date) date.textContent = new Intl.DateTimeFormat('ar-MA', dateOptions).format(now);
   if(opened) opened.textContent = new Intl.DateTimeFormat('ar-MA', {hour:'2-digit', minute:'2-digit', hour12:false}).format(appOpenedAt);
 }
+/* ============================================================
+   SUPABASE SHARED CONTENT SYNC
+   المحتوى (القصائد، المواويل، السلاسل، التصنيفات) يُخزَّن في قاعدة
+   بيانات مشتركة حتى تظهر تعديلات المشرف للجميع. أما السمة والخط
+   والمفضلة فتبقى خاصة بكل جهاز.
+   ============================================================ */
+const SB = (window.supabase && window.SUPABASE_URL && window.SUPABASE_ANON_KEY)
+  ? window.supabase.createClient(window.SUPABASE_URL, window.SUPABASE_ANON_KEY)
+  : null;
+const SB_CONTENT_KEY = 'content';
+let sbPushTimer = null;
+
+function collectSharedContent(){
+  return { poems, mawawil, chains, categories, mawwalCategories, mawwalMaqams };
+}
+function applySharedContent(data){
+  if(!data || typeof data !== 'object') return;
+  if(Array.isArray(data.poems)) poems = data.poems;
+  if(Array.isArray(data.mawawil)) mawawil = data.mawawil;
+  if(Array.isArray(data.chains)) chains = data.chains;
+  if(Array.isArray(data.categories) && data.categories.length) categories = data.categories;
+  if(Array.isArray(data.mawwalCategories) && data.mawwalCategories.length) mawwalCategories = data.mawwalCategories;
+  if(Array.isArray(data.mawwalMaqams) && data.mawwalMaqams.length) mawwalMaqams = data.mawwalMaqams;
+}
+async function loadSharedContent(){
+  if(!SB) return false;
+  try{
+    const { data, error } = await SB.from('diwan_content').select('data').eq('key', SB_CONTENT_KEY).maybeSingle();
+    if(error) throw error;
+    if(data && data.data){
+      applySharedContent(data.data);
+      return true;
+    }
+    await pushSharedContent();
+    return false;
+  }catch(e){ console.log('[v0] loadSharedContent error:', e.message); return false; }
+}
+async function pushSharedContent(){
+  if(!SB) return;
+  try{
+    const { error } = await SB.from('diwan_content').upsert({ key: SB_CONTENT_KEY, data: collectSharedContent(), updated_at: new Date().toISOString() }, { onConflict: 'key' });
+    if(error) throw error;
+  }catch(e){ console.log('[v0] pushSharedContent error:', e.message); }
+}
+function scheduleSharedPush(){
+  if(!SB) return;
+  clearTimeout(sbPushTimer);
+  sbPushTimer = setTimeout(pushSharedContent, 400);
+}
+function refreshContentUI(){
+  buildCategorySelects();
+  buildMawwalSelects();
+  buildMaqamSelects();
+  buildMaqamFilters();
+  buildMawwalMaqamFilters();
+  buildMawwalCategoryFilters();
+  renderAll();
+}
+function subscribeSharedContent(){
+  if(!SB) return;
+  SB.channel('diwan_content_changes')
+    .on('postgres_changes', { event:'*', schema:'public', table:'diwan_content', filter:'key=eq.' + SB_CONTENT_KEY }, (payload) => {
+      const incoming = payload.new && payload.new.data;
+      if(incoming){
+        applySharedContent(incoming);
+        try{
+          localStorage.setItem('ahd_poems', JSON.stringify(poems));
+          localStorage.setItem('ahd_mawawil', JSON.stringify(mawawil));
+          localStorage.setItem('ahd_chains', JSON.stringify(chains));
+          localStorage.setItem('ahd_categories', JSON.stringify(categories));
+          localStorage.setItem('ahd_mawwal_categories', JSON.stringify(mawwalCategories));
+          localStorage.setItem('ahd_mawwal_maqams', JSON.stringify(mawwalMaqams));
+        }catch(e){}
+        refreshContentUI();
+      }
+    })
+    .subscribe();
+}
+
 function saveState(){
   try{
     localStorage.setItem('ahd_poems', JSON.stringify(poems));
@@ -1521,6 +1604,7 @@ function saveState(){
     localStorage.setItem('ahd_font', currentFont);
     localStorage.setItem('ahd_reader_background', readerBackground);
   }catch(e){ toast('تعذر حفظ البيانات محلياً', 'err'); }
+  scheduleSharedPush();
 }
 function exportBackup(){
   if(!isAdmin) return;
@@ -2437,7 +2521,7 @@ function addPoem(){
 function addMawwal(){
   const title = document.getElementById('mTitle').value.trim();
   const content = document.getElementById('mContent').value.trim();
-  if(!title || !content){ toast('يرجى إدخال عنوان الموال والأبيات على الأقل', 'err'); return; }
+  if(!title || !content){ toast('يرجى إدخال عنوان الموال والأبيات على ا��أقل', 'err'); return; }
   mawawil.unshift({
     id:uid(), title, poet:document.getElementById('mPoet').value.trim(),
     maqam:document.getElementById('mMaqam').value, category:document.getElementById('mCategory').value,
